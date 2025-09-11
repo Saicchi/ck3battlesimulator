@@ -1,11 +1,7 @@
 <script lang="ts">
-    import BattleDayComponent from "../lib/BattleDay.svelte";
-    import BattleSummaryTotal from "../lib/BattleSummaryTotal.svelte";
-
     import { UNITS } from "../lib/Defines";
     import { Army, Battle } from "../lib/Battle";
-    import BattleSummaryMain from "$lib/BattleSummaryMain.svelte";
-    import BattleSummaryPursuit from "$lib/BattleSummaryPursuit.svelte";
+    import Day from "$lib/day/Day.svelte";
 
     // let left = new Army([UNITS.BOWMEN, 200]);
     // //let right = new Army([UNITS.LEVY, 1000], [UNITS.ARMORED_FOOTMEN, 100]);
@@ -31,11 +27,11 @@
     const days = Array.from({ length: battle.days }, (_, index) => index);
 </script>
 
-<BattleSummaryTotal {battle} />
-<BattleSummaryMain {battle} />
-<BattleSummaryPursuit {battle} />
+<!-- <SummaryTotal {battle} />
+<SummaryMain {battle} />
+<SummaryPursuit {battle} /> -->
 {#each days as day}
-    <BattleDayComponent {day} {battle} />
+    <Day {day} {battle} />
 {/each}
 
 <style>

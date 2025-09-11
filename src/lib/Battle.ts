@@ -1,36 +1,35 @@
 import type { Unit } from "./Defines";
 import { DEFINES, PHASES } from "./Defines"
 
-interface BattleDay {
-    strength: number, // initial strength of the day
+const MANEUVER_LENGTH = 2;
+const EARLY_COMBAT_LENGTH = 12;
+const AFTERMATH_LENGTH = 3;
 
-    damage: number, // damage the unit does in the day
+class Day {
+    public day = 0;
 
-    remaining: number, // actual amount of units the game sees (from rounded down deaths)
-    killed: number, // killed in this day
+    // initial day values
+    public strength = 0; // real amount of units in battle
+    public remaining = 0; // remaining from previous day - died from previous day (rounded down deaths)
 
-    lost: number, // casualties in this day
-    routed: number, //  soft casualties in this day
-    died: number // hard casualties in this day
+    // simulation values
+    public attackPower = 0;
+    public pursuitPower = 0;
+    public screenPower = 0;
+    public health = 0;
 
-    // Aftermath stats
-    pursuitDamage: number, // pursuit damage
-    pursuitKilled: number, // killed with pursuit damage
-    leftBehind: number // died during retreat
+    // after simulation values
+    public killed = 0; // total killed
+    public lost = 0; // total casualties
+    public routed = 0; // soft casualties
+    public died = 0; // hard casualties
+
+    // aftermath phase values
+    public killedPursuit = 0; // personally killed units during pursuit
+    public diedPursuit = 0; // died from pursuing units
+    public killedLeftBehind = 0; // kills from units that were left behind
+    public diedleftBehind = 0; // died from being left behind
 }
-
-const _blankBattleDay = () => <BattleDay>{
-    strength: 0,
-    damage: 0,
-    pursuitDamage: 0,
-    remaining: 0,
-    killed: 0,
-    pursuitKilled: 0,
-    lost: 0,
-    routed: 0,
-    died: 0,
-    leftBehind: 0,
-};
 
 class ArmyUnit {
     public army: Army | null = null;
@@ -38,14 +37,19 @@ class ArmyUnit {
     //stationing?: Holding,
 
     // Values per day of battle
-    readonly days: BattleDay[] = [];
+    readonly days: Day[] = [];
 
-    newDay() { this.days.push(_blankBattleDay()); }
+    day(day: number) { return this.days[day]; }
+    get yesterday() { return this.days[this.days.length - 2]; }
+    get today() { return this.days[this.days.length - 1]; }
+    get aftermath() { return this.days[this.army!.battle!.aftermath]; }
+    get tomorrow() { this.days.push(new Day()); return this.today; }
+
     constructor(unit: Unit, strength: number) {
         this.unit = unit;
-        this.newDay();
-        this.days[0].strength = strength;
-        this.days[0].remaining = strength;
+        const tomorrow = this.tomorrow;
+        tomorrow.strength = strength;
+        tomorrow.remaining = strength;
     }
 
     attackPower(day: number) {
@@ -62,13 +66,13 @@ class ArmyUnit {
         return damage;
     }
 
-    finalToughness(): number { return this.unit.toughness; }
-
     screenPower(day: number) {
         let screen = this.unit.screen;  // 1 total defense per screen
         screen *= this.days[day].strength;
         return screen;
     }
+
+    finalToughness(): number { return this.unit.toughness; }
 }
 
 export class Army {
@@ -76,21 +80,29 @@ export class Army {
     readonly commander: null;
     readonly units: ArmyUnit[] = [];
 
-    // Total values per day of battle
-    readonly days: BattleDay[] = [];
+    // Values per day of battle
+    readonly days: Day[] = [];
 
-    newDay() { this.days.push(_blankBattleDay()); }
+
+    day(day: number) { return this.days[day]; }
+    get yesterday() { return this.days[this.days.length - 2]; }
+    get today() { return this.days[this.days.length - 1]; }
+    get aftermath() { return this.days[this.battle!.aftermath]; }
+    get tomorrow() { this.days.push(new Day()); return this.today; }
+
     constructor(...units: [Unit, number][]) {
         this.commander = null;
-        this.newDay();
+        const tomorrow = this.tomorrow;
         for (const item of units) {
             const unit = new ArmyUnit(item[0], item[1]);
             unit.army = this;
-            this.days[0].strength += item[1];
-            this.days[0].remaining += item[1];
             this.units.push(unit);
+            tomorrow.strength += item[1];
+            tomorrow.remaining += item[1];
         }
     }
+
+    get isDead() { return (this.today.strength - this.today.lost) <= 0; }
 
     combatWidthMultiplier(day: number) {
         if (!this.battle) { return 1; }
@@ -103,7 +115,7 @@ export class Battle {
     readonly left: Army;
     readonly right: Army;
 
-    public days = -1; // days of battle
+    public days = 0; // days of battle
     public aftermath = 0; // starting day of aftermath
     readonly combatWidth; // 100 is the minimum combat width
     public leftWon: boolean = true; // 
@@ -113,231 +125,231 @@ export class Battle {
         this.right = right;
         this.left.battle = this;
         this.right.battle = this;
-        this.combatWidth = Math.max(100, (this.left.days[0].strength + this.right.days[0].strength) / 2);
+        this.combatWidth = Math.max(100, (this.left.today.strength + this.right.today.strength) / 2);
     }
 
     phase(day: number): string {
         // day starts at 0
-        if (day < 2) { return PHASES.MANEUVER; } // 2 days
-        if (day < 13) { return PHASES.EARLY; } // 12 days
+        if (day < MANEUVER_LENGTH) { return PHASES.MANEUVER; } // 2 days
+        if (day < MANEUVER_LENGTH + EARLY_COMBAT_LENGTH) { return PHASES.EARLY; } // 12 days
         if (this.aftermath && day >= this.aftermath) { return PHASES.AFTERMATH; }
         return PHASES.LATE;
     }
 
-    private combatManeuver() { // Maneuver Phase
-        if (!this.days) { return; } // day 0 is already filled
-        const pushDay = (army: Army) => {
-            army.newDay();
-            for (const unit of army.units) {
-                unit.newDay();
-                const strength = unit.days[this.days - 1].strength;
-                unit.days[this.days].strength = strength;
-                unit.days[this.days].remaining = strength;
-                army.days[this.days].strength += strength;
-                army.days[this.days].remaining += strength;
-            }
-        };
-        pushDay(this.left);
-        pushDay(this.right);
-    }
-
-    private combatBattle(attacker: Army, defender: Army) { // Early and Late Battle Phase
-
-        const defenderHealth = defender.units.reduce((acc, unit) => acc + unit.days[this.days].strength * unit.finalToughness(), 0);
-
-        for (const unit of defender.units) {
-            const strength = unit.days[this.days].strength;
-            if (!strength) {
-                unit.days[this.days].remaining = unit.days[this.days - 1].remaining;
-                continue;
-            }
-
-            const ratio = strength / defender.days[this.days].strength; // receives ratio% of the damage
-            let lost = (ratio * attacker.days[this.days].damage) / unit.finalToughness();
-            lost = Math.min(lost, strength);
-            const died = DEFINES.BASE_RATIO_CASUALTIES_CONVERSION * lost;
-            const routed = lost - died;
-
-            attacker.days[this.days].killed += died;
-            defender.days[this.days].died += died;
-
-            unit.days[this.days].remaining = unit.days[this.days - 1].remaining - Math.floor(died);
-            defender.days[this.days].remaining += unit.days[this.days].remaining;
-
-            unit.days[this.days].lost = lost;
-            defender.days[this.days].lost += unit.days[this.days].lost;
-
-            unit.days[this.days].routed = routed;
-            defender.days[this.days].routed += unit.days[this.days].routed;
-
-            unit.days[this.days].died = died;
-            defender.days[this.days].died += unit.days[this.days].died;
-        }
-
-        for (const unit of attacker.units) {
-            const attackPower = unit.days[this.days].damage;
-            if (!attackPower) { continue; }
-            const ratio = attackPower / attacker.days[this.days].damage; // ratio% of damage gives ratio% of kills
-            unit.days[this.days].killed = ratio * attacker.days[this.days].killed;
-        }
-    }
-
-    private combatAftermath(attacker: Army, defender: Army) { // Aftermath Phase
-        // this does not change per day
-        const totalScreen = defender.units.reduce((acc, unit) => acc + unit.screenPower(this.aftermath), 0);
-
-        let pursuitDamage = attacker.days[this.days].pursuitDamage;
-
-        // multiply pursuit damage by ratio of initial strength / today strength
-        if (defender.days[this.days].strength) {
-            const lostStrengthRatio = defender.days[this.aftermath].strength / defender.days[this.days].strength;
-            pursuitDamage *= lostStrengthRatio;
-        }
-
-        // receive left behind damage based on initial strength
-        const defenderHealth = defender.units.reduce((acc, unit) => acc + unit.days[this.aftermath].strength * unit.finalToughness(), 0);
-        const leftBehindDamage = defenderHealth * DEFINES.BASE_TOUGHNESS_TO_PURSUIT;
-        pursuitDamage += leftBehindDamage;
-
-        for (const unit of defender.units) {
-            const strength = unit.days[this.days].strength;
-            if (!strength) {
-                unit.days[this.days].remaining = unit.days[this.days - 1].remaining;
-                continue;
-            }
-
-            const unitHealth = unit.days[this.aftermath].strength * unit.finalToughness();
-            const ratio = unitHealth / defenderHealth;
-
-            //const ratio = strength / defender.days[this.days].strength; // receives ratio% of things
-            const unitScreen = (ratio * totalScreen) / 3;
-            let unitPursuitDamage = (ratio * pursuitDamage) / 3; // split over 3 days;
-
-            // receive left behind damage based on initial strength
-
-            const unitLeftBehindDamage = (unitHealth * DEFINES.BASE_TOUGHNESS_TO_PURSUIT) / 3;
-
-            // screen reduces damage up to a limit
-            const minimalDamage = (unitHealth * DEFINES.MINIMUM_PURSUIT_DAMAGE) / 3;
-            unitPursuitDamage -= unitScreen;
-            unitPursuitDamage = Math.max(unitPursuitDamage, minimalDamage);
-
-            let lost = unitPursuitDamage / unit.finalToughness();
-            lost = Math.min(lost, strength);
-
-            // x% of damage gets x% of kills
-            const leftBehindRatio = Math.min(1, unitLeftBehindDamage / unitPursuitDamage);
-            const leftBehind = lost * leftBehindRatio;
-            const diedFromPursuit = lost - leftBehind;
-
-            attacker.days[this.days].killed += 0;
-
-            unit.days[this.days].leftBehind += leftBehind;
-            defender.days[this.days].leftBehind += leftBehind;
-
-            unit.days[this.days].remaining = unit.days[this.days - 1].remaining - Math.floor(lost);
-            defender.days[this.days].remaining += unit.days[this.days].remaining;
-
-            unit.days[this.days].lost = lost;
-            defender.days[this.days].lost += lost;
-
-            unit.days[this.days].died = diedFromPursuit;
-            defender.days[this.days].died += diedFromPursuit;
-        }
-
-        for (const unit of attacker.units) {
-            // TODO: Separate kills from pursuit power from game kills (which uses attack)
-            const attackPower = unit.days[this.days].damage;
-            if (!attackPower) { continue; }
-            const ratio = attackPower / attacker.days[this.days].damage; // ratio% of damage gives ratio% of kills
-            unit.days[this.days].killed = ratio * attacker.days[this.days].killed;
-        }
-    }
 
     // https://forum.paradoxplaza.com/forum/threads/combat-mechanics-explained.1434737/
     simulate() {
         console.clear();
+
+        // first maneuver day is already filled
+        const newManeuverDay = (army: Army) => {
+
+            if (this.days == 0) { return; } // day 0 is already filled
+            const armyTomorow = army.tomorrow;
+            armyTomorow.day = this.days;
+            for (const unit of army.units) {
+                const unitToday = unit.today;
+                const unitTomorow = unit.tomorrow;
+                unitTomorow.day = this.days;
+
+                unitTomorow.strength = unitToday.strength;
+                armyTomorow.strength += unitTomorow.strength;
+
+                unitTomorow.remaining = unitToday.remaining;
+                armyTomorow.remaining += unitTomorow.remaining;
+            }
+        }
+
+        // early and late combat phases
+        const newMainDay = (army: Army) => {
+            const armyTomorow = army.tomorrow;
+            armyTomorow.day = this.days;
+            for (const unit of army.units) {
+                const unitToday = unit.today;
+                const unitTomorow = unit.tomorrow;
+                unitTomorow.day = this.days;
+
+                unitTomorow.strength = Math.max(0, unitToday.strength - unitToday.lost);
+                armyTomorow.strength += unitTomorow.strength;
+
+                unitTomorow.remaining = unitToday.remaining - Math.floor(unitToday.died);
+                armyTomorow.remaining += unitTomorow.remaining;
+
+                unitTomorow.attackPower = unit.attackPower(unitTomorow.day);
+                armyTomorow.attackPower += unitTomorow.attackPower;
+            }
+        }
+
+        // aftermath phase
+        const newPursuitDay = (army: Army) => {
+            const armyLost = army.isDead;
+            const armyToday = army.today;
+            const armyTomorow = army.tomorrow;
+            armyTomorow.day = this.days;
+
+            for (const unit of army.units) {
+                const unitToday = unit.today;
+                const unitTomorow = unit.tomorrow;
+                unitTomorow.day = this.days;
+
+                unitTomorow.strength = Math.max(0, unitToday.strength - unitToday.lost);
+                // set loser soft casualties to their strength
+                if (armyLost && this.days == this.aftermath) { // aftermath setup
+                    // loser routed units get attacked
+                    unitTomorow.strength = unit.days.reduce((acc, day) => acc + day.routed, 0);
+                }
+                armyTomorow.strength += unitTomorow.strength;
+
+                unitTomorow.remaining = unitToday.remaining - Math.floor(unitToday.died);
+                armyTomorow.remaining += unitTomorow.remaining;
+
+                unitTomorow.attackPower = unit.attackPower(unitTomorow.day);
+                armyTomorow.attackPower += unitTomorow.attackPower;
+
+                unitTomorow.pursuitPower = unit.pursuitPower(unitTomorow.day);
+                armyTomorow.pursuitPower += unitTomorow.pursuitPower;
+
+                unitTomorow.screenPower = unit.screenPower(unitTomorow.day);
+                armyTomorow.screenPower += unitTomorow.screenPower;
+
+                unitTomorow.health = unitTomorow.strength * unit.finalToughness();
+                armyTomorow.health += unitTomorow.health;
+            }
+        }
+
+        const combatMain = (attacker: Army, defender: Army) => { // Early and Late Battle Phase
+            for (const unit of defender.units) {
+                // receives ratio% of the damage
+                const ratio = unit.today.strength ? unit.today.strength / defender.days[this.days].strength : 0;
+
+                let lost = (ratio * attacker.today.attackPower) / unit.finalToughness();
+                lost = Math.min(lost, unit.today.strength);
+                unit.today.lost = lost;
+                defender.today.lost += lost;
+
+                const died = DEFINES.BASE_RATIO_CASUALTIES_CONVERSION * lost;
+                unit.today.died = died;
+                defender.today.died += died;
+                attacker.today.killed += died;
+
+                const routed = lost - died;
+                unit.today.routed = routed;
+                defender.today.routed += routed;
+            }
+
+            for (const unit of attacker.units) {
+                // ratio% of damage gives ratio% of kills
+                const ratio = unit.today.attackPower ? unit.today.attackPower / attacker.today.attackPower : 0;
+                unit.today.killed = ratio * attacker.today.killed;
+            }
+        }
+
+        const combatPursuit = (attacker: Army, defender: Army) => { // Aftermath Phase
+            // silly paradox
+            let actualPursuitDamage = attacker.today.pursuitPower;
+
+            if (defender.today.strength) {
+                // multiply pursuit damage by ratio of initial aftermath strength / today strength
+                actualPursuitDamage *= defender.aftermath.strength / defender.today.strength;
+            }
+
+            // receive left behind damage based on initial aftermath health (not strength!)
+            const leftBehindDamage = defender.aftermath.health * DEFINES.BASE_TOUGHNESS_TO_PURSUIT;
+            actualPursuitDamage += leftBehindDamage;
+
+            for (const unit of defender.units) {
+                // yes, ratio uses health instead of strength (paradox???)
+                const ratio = unit.aftermath.health ? unit.aftermath.health / defender.aftermath.health : 0;
+
+                // total screen does not change from initial aftermath values
+                const unitScreen = ratio * defender.aftermath.screenPower;
+
+                // screen reduces damage up to this limit
+                const minimalDamage = unit.aftermath.health * DEFINES.MINIMUM_PURSUIT_DAMAGE;
+
+                // ratio% of total army receives ratio% of damage
+                let unitPursuitDamage = ratio * actualPursuitDamage;
+
+                unitPursuitDamage -= unitScreen;
+                unitPursuitDamage = Math.max(unitPursuitDamage, minimalDamage);
+
+                // damage is split over the length of the aftermath
+                let died = unitPursuitDamage / (AFTERMATH_LENGTH * unit.finalToughness());
+                died = Math.min(died, unit.today.strength);
+                unit.today.lost = died;
+                unit.today.died = died;
+                defender.today.lost += died;
+                defender.today.died += died;
+                attacker.today.killed += died;
+
+                // left behind damage this unit received
+                const unitLeftBehindDamage = unit.aftermath.health * DEFINES.BASE_TOUGHNESS_TO_PURSUIT;
+
+                // how much of the damage was from being left behind
+                const leftBehindRatio = Math.min(1, unitLeftBehindDamage / unitPursuitDamage);
+                const leftBehind = died * leftBehindRatio;
+                unit.today.diedleftBehind = leftBehind;
+                defender.today.diedleftBehind += leftBehind;
+                attacker.today.killedLeftBehind += leftBehind;
+
+                const diedFromPursuit = died - leftBehind;
+                unit.today.diedPursuit = diedFromPursuit;
+                defender.today.diedPursuit += diedFromPursuit;
+                attacker.today.killedPursuit += diedFromPursuit;
+            }
+
+            for (const unit of attacker.units) {
+                // ratio% of pursuit power gives ratio% of pursuit kills
+                const ratioPursuit = unit.today.pursuitPower ? unit.today.pursuitPower / attacker.today.pursuitPower : 0;
+                unit.today.killedPursuit = ratioPursuit * attacker.today.killedPursuit;
+
+                // ratio% of attack power gives ratio% of left behind kills
+                const ratioLeftBehind = unit.today.attackPower ? unit.today.attackPower / attacker.today.attackPower : 0;
+                unit.today.killedLeftBehind = ratioLeftBehind * attacker.today.killedLeftBehind;
+
+                unit.today.killed = unit.today.killedPursuit + unit.today.killedLeftBehind;
+            }
+        }
+
         while (this.days < DEFINES.MAX_DAYS_OF_COMBAT) {
-            this.days += 1;
-            if (this.aftermath && this.days == this.aftermath + 3) { break; } // aftermath always lasts 3 days
+            if (this.aftermath && this.days == this.aftermath + AFTERMATH_LENGTH) { break; }
+            const phase = this.phase(this.days);
 
-            let phase = this.phase(this.days);
-            if (phase == PHASES.MANEUVER) { this.combatManeuver(); continue; }
+            if (phase == PHASES.MANEUVER) {
+                newManeuverDay(this.left);
+                newManeuverDay(this.right);
+            }
 
-            // an army was defeated
-            const remainingLeft = Math.max(0, this.left.days[this.days - 1].strength - this.left.days[this.days - 1].lost);
-            const remainingRight = Math.max(0, this.right.days[this.days - 1].strength - this.right.days[this.days - 1].lost);
-            if (!this.aftermath && (!remainingLeft || !remainingRight)) {
-                if (phase == PHASES.EARLY) { this.leftWon = remainingLeft > 0; break; } // early phase finish
-                // TODO: HANDLE EARLY PHASE WIN KILLING THE ENTIRE ENEMY
-
-                if (!this.aftermath) { // late phase finish
-                    this.aftermath = this.days;
-                    this.leftWon = remainingLeft > 0;
-                    phase = PHASES.AFTERMATH;
+            if (phase == PHASES.EARLY || phase == PHASES.LATE) {
+                // an army was defeated
+                if (this.left.isDead || this.right.isDead) {
+                    this.leftWon = this.right.isDead;
+                    if (phase == PHASES.EARLY) { // all loser soft casualties turn into hard casualties
+                        // TODO: HANDLE THIS
+                        console.log("early loss");
+                        break;
+                    } else if (phase == PHASES.LATE) { // goes into aftermath phase
+                        this.aftermath = this.days;
+                        continue; // back to the start
+                    }
+                } else {
+                    newMainDay(this.left);
+                    newMainDay(this.right);
+                    combatMain(this.left, this.right);
+                    combatMain(this.right, this.left);
                 }
             }
 
-            if (phase != PHASES.AFTERMATH) { // Early or Late combat phase
-                const pushDay = (army: Army) => {
-                    army.newDay();
-                    for (const unit of army.units) {
-                        unit.newDay();
-
-                        const strength = Math.max(0, unit.days[this.days - 1].strength - unit.days[this.days - 1].lost);
-                        unit.days[this.days].strength = strength;
-                        army.days[this.days].strength += strength;
-
-                        const attackPower = unit.attackPower(this.days);
-                        unit.days[this.days].damage = attackPower;
-                        army.days[this.days].damage += attackPower;
-                    }
-                };
-                pushDay(this.left);
-                pushDay(this.right);
-                this.combatBattle(this.left, this.right);
-                this.combatBattle(this.right, this.left);
-            } else {
-                const winner = this.leftWon ? this.left : this.right;
-                const loser = this.leftWon ? this.right : this.left;
-                const pushDay = (army: Army) => {
-                    army.newDay();
-                    for (const unit of army.units) {
-                        unit.newDay();
-
-                        let strength = Math.max(0, unit.days[this.days - 1].strength - unit.days[this.days - 1].lost);
-                        if (this.days == this.aftermath && army === loser) { // aftermath setup
-                            // loser routed units get attacked
-                            strength = unit.days.reduce((acc, day) => acc + day.routed, 0);
-                        }
-                        unit.days[this.days].strength = strength;
-                        army.days[this.days].strength += strength;
-
-                        if (army === winner) { // only winner attacks
-                            unit.days[this.days].remaining = unit.days[this.days - 1].remaining;
-                            army.days[this.days].remaining += unit.days[this.days - 1].remaining;
-
-                            const attackPower = unit.attackPower(this.days);
-                            unit.days[this.days].damage = attackPower;
-                            army.days[this.days].damage += attackPower;
-
-                            const pursuitPower = unit.pursuitPower(this.days);
-                            unit.days[this.days].pursuitDamage = pursuitPower;
-                            army.days[this.days].pursuitDamage += pursuitPower;
-                        }
-                    }
-                };
-                pushDay(this.left);
-                pushDay(this.right);
-                this.combatAftermath(winner, loser);
+            if (phase == PHASES.AFTERMATH) {
+                newPursuitDay(this.left);
+                newPursuitDay(this.right);
+                combatPursuit(this.leftWon ? this.left : this.right, this.leftWon ? this.right : this.left);
             }
+
+            this.days += 1;
         }
-        console.log('lost', this.right.units[0].days.slice(this.aftermath).reduce((acc, v) => acc + v.lost, 0));
-        console.log('left', this.right.units[0].days.slice(this.aftermath).reduce((acc, v) => acc + v.leftBehind, 0));
-        console.log('pursued', this.right.units[0].days.slice(this.aftermath).reduce((acc, v) => acc + v.died, 0));
-        console.log("------")
-        console.log('lost', this.right.units[1].days.slice(this.aftermath).reduce((acc, v) => acc + v.lost, 0));
-        console.log('left', this.right.units[1].days.slice(this.aftermath).reduce((acc, v) => acc + v.leftBehind, 0));
-        console.log('pursued', this.right.units[1].days.slice(this.aftermath).reduce((acc, v) => acc + v.died, 0));
+
+        console.log(this.left.days[0].strength - this.right.today.strength, this.left.today.remaining - Math.floor(this.left.today.died));
+        console.log(this.right.days[0].strength - this.right.today.strength, this.right.today.remaining - Math.floor(this.right.today.died));
     }
 }
